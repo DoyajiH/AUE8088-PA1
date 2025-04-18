@@ -6,6 +6,7 @@
 import argparse
 
 # PyTorch & Pytorch Lightning
+from lightning.pytorch.loggers.wandb import WandbLogger
 from lightning import Trainer
 from torch.utils.flop_counter import FlopCounterMode
 import torch
@@ -34,13 +35,20 @@ if __name__ == "__main__":
         batch_size = 1,
     )
 
+    wandb_logger = WandbLogger(
+        project = cfg.WANDB_PROJECT,
+        save_dir = cfg.WANDB_SAVE_DIR,
+        entity = cfg.WANDB_ENTITY,
+        name = cfg.WANDB_NAME,
+    )
+
     trainer = Trainer(
         accelerator = cfg.ACCELERATOR,
         devices = cfg.DEVICES,
         precision = cfg.PRECISION_STR,
         benchmark = True,
         inference_mode = True,
-        logger = False,
+        logger = wandb_logger,
     )
 
     trainer.validate(model, ckpt_path = args.ckpt_file, datamodule = datamodule)
