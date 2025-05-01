@@ -1,7 +1,9 @@
 # Python packages
+import os
 from termcolor import colored
 from typing import Dict
 import copy
+from termcolor import colored
 
 # PyTorch & Pytorch Lightning
 from lightning.pytorch import LightningModule
@@ -12,9 +14,10 @@ from torchvision.models.alexnet import AlexNet
 import torch
 
 # Custom packages
-from src.metric import MyAccuracy
+from src.metric import MyAccuracy, MyF1Score
 import src.config as cfg
 from src.util import show_setting
+from src.dataset import TinyImageNetDatasetModule
 
 
 # [TODO: Optional] Rewrite this class if you want
@@ -56,6 +59,10 @@ class SimpleClassifier(LightningModule):
 
         # Metric
         self.accuracy = MyAccuracy()
+        self.f1score = MyF1Score(num_classes)
+        # validation epoch 마지막에 쓰기 위해 버퍼에 preds/targets 저장
+        self._val_preds   = []
+        self._val_targets = []
 
         # Hyperparameters
         self.save_hyperparameters()
@@ -85,10 +92,47 @@ class SimpleClassifier(LightningModule):
 
     def validation_step(self, batch, batch_idx):
         loss, scores, y = self._common_step(batch)
+        preds    = torch.argmax(scores, dim=1)
         accuracy = self.accuracy(scores, y)
-        self.log_dict({'loss/val': loss, 'accuracy/val': accuracy},
+        f1_per_class, f1_macro = self.f1score(scores, y)
+        self.log_dict({'loss/val': loss, 'accuracy/val': accuracy,'f1/val': f1_macro},
                       on_step=False, on_epoch=True, prog_bar=True, logger=True)
         self._wandb_log_image(batch, batch_idx, scores, frequency = cfg.WANDB_IMG_LOG_FREQ)
+        # 마지막 epoch에 출력할 confusion matrix용 버퍼에 저장
+        self._val_preds.append(preds.cpu())
+        self._val_targets.append(y.cpu())
+
+    def on_validation_epoch_end(self):
+        # 1) preds/targets를 모은 후 한 번에 꺼내기
+        preds_all   = torch.cat(self._val_preds)
+        targets_all = torch.cat(self._val_targets)
+
+        # 2) confusion matrix 생성
+        num_cls = self.f1score.num_classes
+        cm = torch.zeros((num_cls, num_cls), dtype=torch.long)
+        for p, t in zip(preds_all, targets_all):
+            cm[p, t] += 1
+
+        # 3) 클래스별 precision/recall/F1 계산
+        tp       = cm.diag().float()
+        fp       = cm.sum(dim=1).float() - tp
+        fn       = cm.sum(dim=0).float() - tp
+        precision= tp / (tp + fp).clamp(min=1e-6)
+        recall   = tp / (tp + fn).clamp(min=1e-6)
+        f1_cls   = 2 * (precision * recall) / (precision + recall).clamp(min=1e-6)
+
+        # 4) 마지막 epoch일 때만 터미널 프린트
+        if hasattr(self, "trainer") and self.current_epoch == self.trainer.max_epochs - 1:
+            print("\n=== Confusion Matrix (first 10 classes) ===")
+            print(cm[:10, :10])
+            print("\n=== F1 Scores (first 10 classes) ===")
+            for i in range(10):
+                print(f" Class {i:3d}: F1 = {f1_cls[i]:.4f}")
+
+        # 5) 다음 epoch을 위해 버퍼 초기화
+        self._val_preds.clear()
+        self._val_targets.clear()
+
 
     def _common_step(self, batch):
         x, y = batch
