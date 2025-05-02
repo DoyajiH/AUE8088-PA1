@@ -3,7 +3,7 @@ import os
 from termcolor import colored
 from typing import Dict
 import copy
-from termcolor import colored
+import numpy as np
 
 # PyTorch & Pytorch Lightning
 from lightning.pytorch import LightningModule
@@ -22,10 +22,39 @@ from src.dataset import TinyImageNetDatasetModule
 
 # [TODO: Optional] Rewrite this class if you want
 class MyNetwork(AlexNet):
-    def __init__(self):
+    def __init__(self, num_classes: int = 200, dropout: float = 0.5):
         super().__init__()
+        self.features = nn.Sequential(
+            nn.Conv2d(3, 64, kernel_size=5, stride=2, padding=2),  # out: 64×32×32
+            nn.ReLU(inplace=True),
+            nn.MaxPool2d(kernel_size=3, stride=2, padding=1),     # out: 64×16×16
 
-        # [TODO] Modify feature extractor part in AlexNet
+            nn.Conv2d(64, 192, kernel_size=5, stride=1, padding=2),# out: 192×16×16
+            nn.ReLU(inplace=True),
+            nn.MaxPool2d(kernel_size=3, stride=2, padding=1),     # out: 192×8×8
+
+            nn.Conv2d(192, 384, kernel_size=3, stride=1, padding=1),# out:384×8×8
+            nn.ReLU(inplace=True),
+
+            nn.Conv2d(384, 256, kernel_size=3, stride=1, padding=1),# out:256×8×8
+            nn.ReLU(inplace=True),
+
+            nn.Conv2d(256, 256, kernel_size=3, stride=1, padding=1),# out:256×8×8
+            nn.ReLU(inplace=True),
+            nn.MaxPool2d(kernel_size=3, stride=2, padding=1),      # out:256×4×4
+        )
+
+        # classifier 부분도 256×4×4 → 4096 → ... → num_classes
+        self.avgpool = nn.AdaptiveAvgPool2d((4, 4))
+        self.classifier = nn.Sequential(
+            nn.Dropout(p=dropout),
+            nn.Linear(256 * 4 * 4, 4096),
+            nn.ReLU(True),
+            nn.Dropout(p=dropout),
+            nn.Linear(4096, 4096),
+            nn.ReLU(True),
+            nn.Linear(4096, num_classes),
+        )
 
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
@@ -84,7 +113,19 @@ class SimpleClassifier(LightningModule):
         return self.model(x)
 
     def training_step(self, batch, batch_idx):
-        loss, scores, y = self._common_step(batch)
+        x, y = batch
+        if cfg.IMAGE_USE_MIXUP:
+            # Mixup 적용
+            lam = np.random.beta(cfg.IMAGE_MIXUP_ALPHA, cfg.IMAGE_MIXUP_ALPHA)
+            idx = torch.randperm(x.size(0))
+            x = lam * x + (1 - lam) * x[idx]
+            y_a, y_b = y, y[idx]
+            scores = self(x)
+            loss = lam * self.loss_fn(scores, y_a) + (1 - lam) * self.loss_fn(scores, y_b)
+        else:
+            # Mixup 꺼져 있으면 일반 학습
+            loss, scores, y = self._common_step((x, y))
+        
         accuracy = self.accuracy(scores, y)
         self.log_dict({'loss/train': loss, 'accuracy/train': accuracy},
                       on_step=False, on_epoch=True, prog_bar=True, logger=True)

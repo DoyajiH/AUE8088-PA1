@@ -9,6 +9,7 @@ import wget
 from lightning.pytorch import LightningDataModule
 from torch.utils.data import DataLoader
 from torchvision import transforms
+from torchvision.transforms import RandAugment
 from torchvision.datasets import ImageFolder
 
 # Custom packages
@@ -40,13 +41,25 @@ class TinyImageNetDatasetModule(LightningDataModule):
             os.remove(filename)
 
     def train_dataloader(self):
-        tf_train = transforms.Compose([
+        aug_list = []
+        # 1) RandAugment
+        if cfg.USE_RANDAUGMENT:
+            aug_list.append(
+                RandAugment(
+                    num_ops=cfg.RANDAUGMENT_N,
+                    magnitude=cfg.RANDAUGMENT_M
+                )
+            )
+        # 2) 기존 기본 증강
+        aug_list += [
             transforms.RandomRotation(cfg.IMAGE_ROTATION),
             transforms.RandomHorizontalFlip(cfg.IMAGE_FLIP_PROB),
             transforms.RandomCrop(cfg.IMAGE_NUM_CROPS, padding=cfg.IMAGE_PAD_CROPS),
             transforms.ToTensor(),
             transforms.Normalize(cfg.IMAGE_MEAN, cfg.IMAGE_STD),
-        ])
+        ]
+
+        tf_train = transforms.Compose(aug_list)
         dataset = ImageFolder(os.path.join(cfg.DATASET_ROOT_PATH, self.__DATASET_NAME__, 'train'), tf_train)
         msg = f"[Train]\t root dir: {dataset.root}\t | # of samples: {len(dataset):,}"
         print(colored(msg, color='blue', attrs=('bold',)))
